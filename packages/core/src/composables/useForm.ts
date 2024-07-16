@@ -20,6 +20,7 @@ import type {
   FieldAttrs,
   FieldError,
   FieldMeta,
+  FieldValidator,
   FormErrors,
   FormEventHandler,
   FormResetState,
@@ -34,12 +35,13 @@ import type {
   UseFormRegister,
   UseFormReturn,
   UseFormSetFieldError,
+  UseFormSetFieldTouched,
   ValidateField,
 } from '../types';
 
 interface FieldRegistry {
   [field: string]: {
-    validate: (value: any) => string | Promise<string> | boolean | undefined;
+    validate: FieldValidator<FormValues>;
   };
 }
 
@@ -103,7 +105,7 @@ type FormMessage<Values extends FormValues> =
       type: ACTION_TYPE.SET_FIELD_ERROR;
       payload: {
         path: string;
-        error: FormErrors<PathValue<Values, Path<Values>>> | string | string[];
+        error: FieldError<PathValue<Values, Path<Values>>> | string | string[];
       };
     }
   | { type: ACTION_TYPE.SET_ISSUBMITTING; payload: boolean }
@@ -239,9 +241,11 @@ export function useForm<
     name: MaybeRefOrGetter<string>,
     { validate }: any = {},
   ) => {
-    fieldRegistry[toValue(name)] = {
-      validate,
-    };
+    if (validate) {
+      fieldRegistry[toValue(name)] = {
+        validate,
+      };
+    }
   };
 
   const registerFieldArray = (name: MaybeRefOrGetter<string>, options: any) => {
@@ -252,7 +256,10 @@ export function useForm<
     };
   };
 
-  const setFieldTouched = (name: string, touched = true) => {
+  const setFieldTouched: UseFormSetFieldTouched<Values> = (
+    name,
+    touched = true,
+  ) => {
     dispatch({
       type: ACTION_TYPE.SET_TOUCHED,
       payload: {
@@ -365,19 +372,21 @@ export function useForm<
     });
   };
 
-  const handleBlur: FormEventHandler['handleBlur'] = (
-    eventOrName: Event | string,
-    path?: string,
-  ): void | (() => void) => {
-    if (isString(eventOrName)) {
+  const handleBlur: FormEventHandler<Path<Values>>['handleBlur'] = (
+    eventOrName,
+    path,
+  ) => {
+    const isPath = (value: any): value is Path<Values> => isString(value);
+
+    if (isPath(eventOrName)) {
       return () => setFieldTouched(eventOrName, true);
     }
 
     const { name, id } = eventOrName.target as HTMLInputElement;
-    const field = path ?? (name || id);
+    const field = path ?? ((name || id) as Path<Values>);
 
     if (field) {
-      setFieldTouched(field, true);
+      return setFieldTouched(field, true);
     }
   };
 
@@ -463,28 +472,32 @@ export function useForm<
     },
   };
 
-  const runSingleFieldValidateHandler = (name: string, value: unknown) => {
-    return new Promise<string>((resolve) =>
-      resolve(fieldRegistry[name].validate(value) as string),
-    );
+  const runSingleFieldValidateHandler = <
+    Name extends Path<Values>,
+    Value extends PathValue<Values, Name>,
+  >(
+    name: Name,
+    value: Value,
+  ) => {
+    return Promise.resolve(fieldRegistry[name].validate(value));
   };
 
   const runFieldValidateHandler = (values: Values) => {
     const fieldKeysWithValidation = keysOf(fieldRegistry).filter((field) =>
       isFunction(fieldRegistry[field].validate),
-    ) as string[];
+    ) as Path<Values>[];
 
     const fieldValidatePromise = fieldKeysWithValidation.map((field) =>
       runSingleFieldValidateHandler(field, get(values, field)),
     );
 
     return Promise.all(fieldValidatePromise).then((errors) =>
-      errors.reduce((prev, curr, index) => {
+      errors.reduce((prev: FormErrors<Values>, curr, index) => {
         if (curr) {
           set(prev, fieldKeysWithValidation[index], curr);
         }
         return prev;
-      }, {} as FormErrors<Values>),
+      }, {}),
     );
   };
 
@@ -604,16 +617,20 @@ export function useForm<
     };
   };
 
-  const validateField: ValidateField<Values> = (name) => {
+  const validateField: ValidateField<Values> = async (name) => {
     if (fieldRegistry[name] && isFunction(fieldRegistry[name].validate)) {
       dispatch({ type: ACTION_TYPE.SET_ISVALIDATING, payload: true });
-      return runSingleFieldValidateHandler(name, get(state.values, name))
-        .then((error) => {
-          setFieldError(name, error);
-        })
-        .finally(() => {
-          dispatch({ type: ACTION_TYPE.SET_ISVALIDATING, payload: false });
-        });
+
+      const value = get(state.values, name) as PathValue<Values, typeof name>;
+      const error = (await runSingleFieldValidateHandler(
+        name,
+        value,
+      )) as FieldError<PathValue<Values, typeof name>>;
+
+      setFieldError(name, error);
+      dispatch({ type: ACTION_TYPE.SET_ISVALIDATING, payload: false });
+
+      return error;
     }
     return Promise.resolve();
   };
@@ -631,6 +648,7 @@ export function useForm<
     setFieldValue,
     setErrors,
     setFieldError,
+    setFieldTouched,
     handleSubmit,
     handleReset,
     resetForm,
@@ -647,6 +665,7 @@ export function useForm<
     getFieldAttrs,
     registerFieldArray,
     setFieldArrayValue,
+    setFieldTouched,
     register,
   });
 

@@ -1,10 +1,10 @@
 import { toNestError } from '@vorms/resolvers';
-import { parse } from 'valibot';
+import { parseAsync, ValiError } from 'valibot';
 
 import type { Resolver } from './types';
-import type { Issues } from 'valibot';
+import type { SchemaIssues } from 'valibot';
 
-const parseErrorSchema = (valibotIssues: Issues) => {
+const parseErrorSchema = (valibotIssues: SchemaIssues) => {
   const errors: Record<string, string> = {};
 
   while (valibotIssues.length) {
@@ -26,12 +26,15 @@ const parseErrorSchema = (valibotIssues: Issues) => {
 
 export const valibotResolver: Resolver = (schema) => async (values) => {
   try {
-    parse(schema, values);
+    await parseAsync(schema, values);
     return {};
   } catch (error: any) {
-    if (error.name !== 'ValiError') throw error;
-    return error.issues.length
-      ? toNestError(parseErrorSchema(error.issues))
-      : {};
+    if (error instanceof ValiError) {
+      return error.issues.length
+        ? toNestError(parseErrorSchema(error.issues))
+        : {};
+    }
+
+    throw error;
   }
 };
